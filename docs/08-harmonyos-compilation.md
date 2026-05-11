@@ -552,3 +552,54 @@ steps:
 5. **CLI Tools 缓存**——每次下载 900MB 太慢
 6. **签名密码 32+ 字符**——华为的安全要求
 7. **p12 绝对不能提交到 git**——用 Secrets + base64
+
+## 最终解决方案：hap-sign-tool.jar
+
+### 为什么 hvigor 内置签名不行
+
+hvigor 的内置签名需要 material 文件加密密码，但 AGC 导出的 material 和 p12 密码不匹配（material 加密的是二进制随机密码，p12 用的是用户设的文本密码）。
+
+### 正确方案
+
+用 `hap-sign-tool.jar`（命令行签名工具）替代 hvigor 内置签名：
+
+1. **构建**：`hvigorw assembleHap` 生成 unsigned HAP
+2. **签名**：`java -jar hap-sign-tool.jar sign-app` 签名
+
+```bash
+java -jar hap-sign-tool.jar sign-app \
+  -mode localSign \
+  -keyAlias arkvault \
+  -keyPwd "密码" \
+  -appCertFile cert.cer \
+  -profileFile profile.p7b \
+  -inFile unsigned.hap \
+  -signAlg SHA256withECDSA \
+  -keystoreFile keystore.p12 \
+  -keystorePwd "密码" \
+  -outFile signed.hap \
+  -compatibleVersion 12 \
+  -signCode 1
+```
+
+### 关键发现
+
+- `hap-sign-tool` 从 p7b Profile 中自动提取开发者证书，不需要单独的 cer 文件
+- `-appCertFile` 可以用 CA 根证书（用于验证证书链）
+- p12 密码是明文，不需要 material 加密
+- 不依赖 hvigor 的 decipher-util 解密链路
+
+### CI 流程
+
+```
+push → hvigorw assembleHap → unsigned.hap → hap-sign-tool sign-app → signed.hap → upload artifact
+```
+
+### 需要的 GitHub Secrets
+
+| Secret | 内容 |
+|--------|------|
+| `SIGNING_P12` | p12 文件 (base64) |
+| `P12_PASSWORD` | p12 密码 (明文) |
+| `SIGNING_CER` | CA 根证书 (base64) |
+| `SIGNING_PROFILE` | Profile p7b 文件 (base64) |
