@@ -440,6 +440,47 @@ GCM 加密的 `GcmParams` 类型字段名和文档不完全一致，需要查类
 
 ---
 
+## 签名问题（30+ 次失败的根本原因）
+
+### Material 和 p12 密码不匹配
+
+AGC 导出的签名包有一个隐藏陷阱：
+
+- `material` 文件里加密的是 AGC 内部生成的**二进制随机密码**（16字节）
+- `p12` 文件的密码是你在下载时设的**文本密码**（如 "pitt1992..."）
+- 两者不一致！hvigor 用 material 解密出的密码打不开 p12
+
+### hvigor 密码加密机制（源码分析）
+
+```
+build-profile.json5 中的 storePassword = 加密后的 hex
+↓
+hvigor decipher-util.js 解密流程:
+1. 读取 material/fd/0,1,2 → 3个16字节缓冲区
+2. XOR(fd[0], fd[1], fd[2], component) → 16字节
+3. Buffer.from(xorResult).toString('utf-8') → 密钥字符串
+4. PBKDF2(密钥字符串, material/ac, 10000, 16, sha256) → AES密钥
+5. AES-128-GCM 解密(material/ce) → 明文密码
+6. 用明文密码打开 p12
+```
+
+**关键发现：** `Buffer.from(int8array).toString('utf-8')` 会把无效 UTF-8 字节替换为 U+FFFD（替换字符），这导致密钥派生结果和预期不同。在 Node.js v22 和 v24 上行为一致。
+
+### 解决方案
+
+在 DevEco Studio 中使用「自动签名」功能，它会生成一套密码匹配的 material + p12。
+
+### 30 次失败分布（最终版）
+
+| 阶段 | 次数 | 核心问题 |
+|------|------|----------|
+| CLI Tools 下载 | 5 | 900MB zip 嵌套目录、权限、分片 |
+| 环境配置 | 4 | npmrc、DEVECO_SDK_HOME、ohpm registry |
+| hvigor 构建 | 6 | plugin 版本匹配、JSON5 配置 |
+| 签名 - 密码格式 | 4 | 明文 vs hex vs 二进制 |
+| 签名 - Material 缓存 | 3 | 旧 material 文件残留 |
+| 签名 - 密码不匹配 | 8+ | material 加密的密码 ≠ p12 密码 |
+
 ## 总结：30 次失败的分布
 
 | 阶段 | 失败次数 | 耗时 | 核心问题 |
